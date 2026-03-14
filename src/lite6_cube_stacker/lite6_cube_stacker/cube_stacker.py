@@ -93,7 +93,7 @@ class CubeStacker(Node):
             world_poses = []
             for pose in self.detected_cubes:
                 ps = PoseStamped()
-                ps.header.frame_id = 'zed_left_camera_optical_frame'
+                ps.header.frame_id = 'zed_left_camera_optical'
                 ps.header.stamp    = self.get_clock().now().to_msg()
                 ps.pose            = pose
                 try:

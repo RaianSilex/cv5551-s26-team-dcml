@@ -49,7 +49,7 @@ class CameraRobotCalibration(Node):
         t = TransformStamped()
         t.header.stamp            = self.get_clock().now().to_msg()
         t.header.frame_id         = 'world'
-        t.child_frame_id          = 'zed_left_camera_optical_frame'
+        t.child_frame_id          = 'zed_left_camera_optical'
         t.transform.translation.x = tx
         t.transform.translation.y = ty
         t.transform.translation.z = tz

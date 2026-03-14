@@ -122,12 +122,12 @@ def generate_launch_description():
         parameters=[{
             'marker_size':   0.04,
             'cube_size':     0.05,
-            'camera_frame':  'zed_left_camera_optical_frame',
+            'camera_frame':  'zed_left_camera_optical',
         }],
         remappings=[
-            ('/zed/zed_node/rgb/image_rect_color',   '/zed/zed_node/rgb/image_rect_color'),
+            ('/zed/zed_node/rgb/color/rect/image',   '/zed/zed_node/rgb/image_rect_color'),
             ('/zed/zed_node/depth/depth_registered',  '/zed/zed_node/depth/depth_registered'),
-            ('/zed/zed_node/rgb/camera_info',          '/zed/zed_node/rgb/camera_info'),
+            ('/zed/zed_node/rgb/color/rect/camera_info',          '/zed/zed_node/rgb/camera_info'),
         ]
     )
 

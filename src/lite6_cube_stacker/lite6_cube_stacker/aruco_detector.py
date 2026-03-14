@@ -32,7 +32,7 @@ class ArucoDetector(Node):
         self.declare_parameter('marker_size',  MARKER_SIZE)
         self.declare_parameter('cube_size',    CUBE_SIZE)
         self.declare_parameter('aruco_dict',   ARUCO_DICT)
-        self.declare_parameter('camera_frame', 'zed_left_camera_optical_frame')
+        self.declare_parameter('camera_frame', 'zed_left_camera_optical')
 
         self.marker_size  = self.get_parameter('marker_size').value
         self.cube_size    = self.get_parameter('cube_size').value
@@ -61,10 +61,10 @@ class ArucoDetector(Node):
 
         # Subscriptions
         self.sub_info  = self.create_subscription(
-            CameraInfo, '/zed/zed_node/rgb/camera_info',
+            CameraInfo, '/zed/zed_node/rgb/color/rect/camera_info',
             self._cb_camera_info, 1)
         self.sub_rgb   = self.create_subscription(
-            Image, '/zed/zed_node/rgb/image_rect_color',
+            Image, '/zed/zed_node/rgb/color/rect/image',
             self._cb_rgb, sensor_qos)
         self.sub_depth = self.create_subscription(
             Image, '/zed/zed_node/depth/depth_registered',
