@@ -66,7 +66,7 @@ def get_task_plan(image):
     _, buffer = cv2.imencode('.jpg', image)
     b64_image = base64.b64encode(buffer).decode('utf-8')
 
-    client = OpenAI()  # uses OPENAI_API_KEY env var
+    client = OpenAI(api_key='YOUR_KEY_HERE')  # replace with your key, remove after
 
     response = client.chat.completions.create(
         model='gpt-4o',
