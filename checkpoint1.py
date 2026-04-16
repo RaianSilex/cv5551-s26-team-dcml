@@ -10,7 +10,7 @@ from checkpoint0 import get_transform_camera_robot
 GRIPPER_LENGTH = 0.067 * 1000
 CUBE_TAG_FAMILY = 'tag36h11'
 CUBE_TAG_ID = 4
-CUBE_TAG_SIZE = 0.0207
+CUBE_TAG_SIZE = 0.017
 
 robot_ip = '192.168.1.182'
 
@@ -33,7 +33,7 @@ def grasp_cube(arm, cube_pose):
 
     # Extract yaw from cube rotation: project cube x-axis onto robot XY plane
     x_axis = cube_pose[:3, 0]
-    yaw = numpy.degrees(numpy.arctan2(x_axis[1], x_axis[0]))
+    yaw = numpy.degrees(numpy.arctan2(x_axis[1], x_axis[0])) + 90
 
     # Top-down grasp orientation
     grasp_roll, grasp_pitch, grasp_yaw = 180, 0, yaw
@@ -79,7 +79,7 @@ def place_cube(arm, cube_pose):
 
     # Extract yaw from rotation matrix
     x_axis = cube_pose[:3, 0]
-    yaw = numpy.degrees(numpy.arctan2(x_axis[1], x_axis[0]))
+    yaw = numpy.degrees(numpy.arctan2(x_axis[1], x_axis[0])) + 90
 
     place_roll, place_pitch, place_yaw = 180, 0, yaw
 

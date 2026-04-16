@@ -15,7 +15,8 @@ import cv2, sys, time, json
 from xarm.wrapper import XArmAPI
 
 from utils.zed_camera import ZedCamera
-from checkpoint1 import GRIPPER_LENGTH
+from utils.vis_utils import draw_pose_axes
+from checkpoint1 import GRIPPER_LENGTH, CUBE_TAG_SIZE
 from config import ROBOT_IP, INGREDIENT_TAG_MAP, STIRRER_TAG_ID, MAIN_CUP_POSITION
 from primitives import ContainerDetector, execute_add_ingredient, execute_stir
 
@@ -54,12 +55,16 @@ def main():
         cv_image = zed.image
 
         print('Detecting AprilTags...')
-        poses = detector.detect_all(cv_image)
+        poses, poses_cam = detector.detect_all(cv_image)
         if poses is None or len(poses) == 0:
             print('No tags detected. Aborting.')
             return
 
         print(f'Detected tag IDs: {list(poses.keys())}')
+
+        # Draw pose axes on detected tags for the confirmation window
+        for t_cam_obj in poses_cam.values():
+            draw_pose_axes(cv_image, camera_intrinsic, t_cam_obj, size=CUBE_TAG_SIZE)
 
         # Show what was detected and wait for confirmation
         print('\nExpected tags:')

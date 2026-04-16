@@ -39,13 +39,16 @@ class ContainerDetector:
 
     def detect_all(self, observation):
         """
-        Detect all AprilTags (ID >= 5) and return a dict mapping tag_id to a
-        4x4 pose in the robot base frame (meters).
+        Detect all AprilTags (ID >= 5) and return a tuple (poses_robot, poses_cam):
+          - poses_robot: dict mapping tag_id -> 4x4 pose in the robot base frame (meters)
+          - poses_cam:   dict mapping tag_id -> 4x4 pose in the camera frame (meters),
+                         used for drawing axes back onto the image.
+        Returns (None, None) if calibration fails.
         """
         t_cam_robot = get_transform_camera_robot(observation, self.camera_intrinsic)
         if t_cam_robot is None:
             print('Could not compute camera-to-robot transform.')
-            return None
+            return None, None
 
         if len(observation.shape) > 2:
             gray = cv2.cvtColor(observation, cv2.COLOR_BGRA2GRAY)
@@ -63,7 +66,8 @@ class ContainerDetector:
             tag_size=CUBE_TAG_SIZE,
         )
 
-        poses = {}
+        poses_robot = {}
+        poses_cam = {}
         for tag in tags:
             if tag.tag_id < 5:
                 continue
@@ -71,9 +75,10 @@ class ContainerDetector:
             t_cam_obj[:3, :3] = tag.pose_R
             t_cam_obj[:3, 3] = tag.pose_t.flatten()
             t_robot_obj = numpy.linalg.inv(t_cam_robot) @ t_cam_obj
-            poses[tag.tag_id] = t_robot_obj
+            poses_robot[tag.tag_id] = t_robot_obj
+            poses_cam[tag.tag_id] = t_cam_obj
 
-        return poses
+        return poses_robot, poses_cam
 
 
 # ──────────────────────────────────────────────

@@ -1,68 +1,83 @@
 """
-FP1 – Beverage-Making Robot (Coffee)
+FP1 – Beverage-Making Robot
 
-Main orchestrator: captures the scene, detects containers, gets a task plan
-from OpenAI, and executes it on the Lite6 arm.
+Main orchestrator. Exposes `run_beverage_task(user_requirement)` so the GUI
+(or any other caller) can trigger the full capture -> plan -> execute flow.
+Running this file directly prompts for a request on the command line.
 """
 
 import cv2, json, time
 from xarm.wrapper import XArmAPI
 
 from utils.zed_camera import ZedCamera
-from checkpoint1 import GRIPPER_LENGTH
+from utils.vis_utils import draw_pose_axes
+from checkpoint1 import GRIPPER_LENGTH, CUBE_TAG_SIZE
 from config import ROBOT_IP, INGREDIENT_TAG_MAP
 from primitives import ContainerDetector, execute_add_ingredient, execute_stir
 from task_planner import get_task_plan
 
 
-def execute_plan(arm, plan, poses):
+def execute_plan(arm, plan, poses, log=print):
     """
     Execute a task plan (list of action dicts) using the robot.
     """
     for i, step in enumerate(plan):
         action = step['action']
-        print(f'\n[Step {i+1}/{len(plan)}] {action}', end='')
+        label = f'[Step {i+1}/{len(plan)}] {action}'
         if 'ingredient' in step:
-            print(f' — {step["ingredient"]}')
-        else:
-            print()
+            label += f' — {step["ingredient"]}'
+        log(label)
 
         if action == 'ADD_INGREDIENT':
             ingredient = step['ingredient'].lower()
             if ingredient not in INGREDIENT_TAG_MAP:
-                print(f'  [SKIP] Unknown ingredient: {ingredient}')
+                log(f'  [SKIP] Unknown ingredient: {ingredient}')
                 continue
             success = execute_add_ingredient(arm, ingredient, poses)
             if not success:
-                print(f'  [ABORT] Failed to add {ingredient}.')
+                log(f'  [ABORT] Failed to add {ingredient}.')
                 return False
 
         elif action == 'STIR':
             success = execute_stir(arm, poses)
             if not success:
-                print(f'  [ABORT] Failed to stir.')
+                log(f'  [ABORT] Failed to stir.')
                 return False
 
         else:
-            print(f'  [SKIP] Unknown action: {action}')
+            log(f'  [SKIP] Unknown action: {action}')
 
-        # Return home between steps for safety
         arm.move_gohome(wait=True)
         time.sleep(0.5)
 
-    print('\nBeverage preparation complete!')
+    log('Beverage preparation complete!')
     return True
 
 
-def main():
-    # Initialize ZED Camera
+def run_beverage_task(user_requirement='', confirm=True, log=print):
+    """
+    End-to-end pipeline: capture scene, plan, optionally confirm, execute.
+
+    Parameters
+    ----------
+    user_requirement : str
+        Free-form text describing the request (e.g. "coffee, lactose intolerant").
+    confirm : bool
+        If True, shows the captured image and waits for a keypress before executing.
+        Set to False for GUI-driven flows that handle confirmation externally.
+    log : callable
+        Function used for progress messages (defaults to print). The GUI passes
+        its own logger to route messages into the status area.
+
+    Returns
+    -------
+    dict
+        {"status": "ok"|"error", "message": str, "response": <raw API response>}
+    """
     zed = ZedCamera()
     camera_intrinsic = zed.camera_intrinsic
-
-    # Initialize container detector
     detector = ContainerDetector(camera_intrinsic)
 
-    # Initialize Lite6 Robot
     arm = XArmAPI(ROBOT_IP)
     arm.connect()
     arm.motion_enable(enable=True)
@@ -73,47 +88,61 @@ def main():
     time.sleep(0.5)
 
     try:
-        # Step 1: Capture scene
-        print('Capturing scene...')
+        log('Capturing scene...')
         cv_image = zed.image
 
-        # Step 2: Detect all container poses via AprilTags
-        print('Detecting containers...')
-        poses = detector.detect_all(cv_image)
+        log('Detecting containers...')
+        poses, poses_cam = detector.detect_all(cv_image)
         if poses is None or len(poses) == 0:
-            print('No containers detected. Aborting.')
-            return
+            return {'status': 'error', 'message': 'No containers detected.', 'response': None}
+        log(f'Detected tag IDs: {list(poses.keys())}')
 
-        detected_tags = list(poses.keys())
-        print(f'Detected tags: {detected_tags}')
+        # Draw pose axes on detected tags (for the confirmation window)
+        for t_cam_obj in poses_cam.values():
+            draw_pose_axes(cv_image, camera_intrinsic, t_cam_obj, size=CUBE_TAG_SIZE)
 
-        # Step 3: Send image to OpenAI for task planning
-        print('\nSending image to OpenAI for task planning...')
-        plan = get_task_plan(cv_image)
-        print('Received task plan:')
-        print(json.dumps(plan, indent=2))
+        log(f'User request: {user_requirement!r}')
+        log('Sending image to OpenAI for task planning...')
+        response = get_task_plan(cv_image, user_requirement)
+        log('Received response:')
+        log(json.dumps(response, indent=2))
 
-        # Step 4: Confirm with user before executing
-        print('\nPress "k" on the image window to execute, or any other key to abort.')
-        cv2.namedWindow('Beverage Setup', cv2.WINDOW_NORMAL)
-        cv2.resizeWindow('Beverage Setup', 1280, 720)
-        cv2.imshow('Beverage Setup', cv_image)
-        key = cv2.waitKey(0)
-        cv2.destroyAllWindows()
+        if response.get('status') != 'ok':
+            message = response.get('message', 'Unknown planning error.')
+            return {'status': 'error', 'message': message, 'response': response}
 
-        if key != ord('k'):
-            print('Aborted by user.')
-            return
+        plan = response.get('plan', [])
+        beverage = response.get('beverage', '?')
 
-        # Step 5: Execute the plan
-        print('\nExecuting task plan...')
-        execute_plan(arm, plan, poses)
+        if confirm:
+            log(f'About to make: {beverage}. Press "k" to execute, any other key to abort.')
+            cv2.namedWindow('Beverage Setup', cv2.WINDOW_NORMAL)
+            cv2.resizeWindow('Beverage Setup', 1280, 720)
+            cv2.imshow('Beverage Setup', cv_image)
+            key = cv2.waitKey(0)
+            cv2.destroyAllWindows()
+            if key != ord('k'):
+                return {'status': 'error', 'message': 'Aborted by user.', 'response': response}
+
+        log(f'Executing plan for {beverage}...')
+        success = execute_plan(arm, plan, poses, log=log)
+        if not success:
+            return {'status': 'error', 'message': 'Execution failed mid-plan.', 'response': response}
+
+        return {'status': 'ok', 'message': f'{beverage} prepared successfully.', 'response': response}
 
     finally:
         arm.move_gohome(wait=True)
         time.sleep(0.5)
         arm.disconnect()
         zed.close()
+
+
+def main():
+    user_requirement = input('What would you like? (e.g. "coffee, lactose intolerant"): ')
+    result = run_beverage_task(user_requirement, confirm=True)
+    print(f'\nFinal status: {result["status"]}')
+    print(f'Message: {result["message"]}')
 
 
 if __name__ == '__main__':
