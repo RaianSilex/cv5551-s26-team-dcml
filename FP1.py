@@ -47,9 +47,6 @@ def execute_plan(arm, plan, poses, log=print):
         else:
             log(f'  [SKIP] Unknown action: {action}')
 
-        arm.move_gohome(wait=True)
-        time.sleep(0.5)
-
     log('Beverage preparation complete!')
     return True
 

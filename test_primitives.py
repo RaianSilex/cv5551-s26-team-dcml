@@ -101,9 +101,6 @@ def main():
                 print(f'Step "{step}" failed. Stopping.')
                 return
 
-            arm.move_gohome(wait=True)
-            time.sleep(0.5)
-
         print('\nAll tests completed successfully!')
 
     finally:
