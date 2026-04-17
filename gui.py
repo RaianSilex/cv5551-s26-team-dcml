@@ -1,9 +1,10 @@
 """
 Tkinter GUI for the beverage-making robot.
 
-The user picks one of two input modes:
+The user picks one of three input modes:
   - Buttons: choose a beverage and optional dietary conditions via checkboxes.
   - Text prompt: type a free-form request.
+  - Gesture: use hand gestures via the ZED camera.
 
 Either way, a user-requirement string is built and sent through the full
 capture -> plan -> execute pipeline in FP1.run_beverage_task.
@@ -15,6 +16,7 @@ from tkinter import ttk, scrolledtext
 
 from config import BEVERAGE_RECIPES, DIETARY_CONDITIONS
 from FP1 import run_beverage_task
+from gesture_input import get_order_from_gesture
 
 
 # Which conditions apply to which beverages. A condition is only offered for
@@ -46,6 +48,10 @@ class BeverageGUI:
         ).pack(side='left', padx=10)
         ttk.Radiobutton(
             mode_frame, text='Text prompt', value='text',
+            variable=self.mode, command=self._on_mode_change,
+        ).pack(side='left', padx=10)
+        ttk.Radiobutton(
+            mode_frame, text='Gesture', value='gesture',
             variable=self.mode, command=self._on_mode_change,
         ).pack(side='left', padx=10)
 
@@ -82,6 +88,18 @@ class BeverageGUI:
             'e.g. I want coffee, but I am lactose intolerant.',
         )
 
+        # ── Gesture hint panel ────────────────────────
+        self.gesture_frame = ttk.LabelFrame(root, text='Gesture guide', padding=10)
+        hints = [
+            '☕  1 finger  →  Coffee',
+            '🍊  Peace (2 fingers)  →  Orange Juice',
+            '🥛  3 fingers  →  Toggle lactose-free',
+            '✅  OK  →  Confirm order',
+            '✊  Fist  →  Cancel / restart',
+        ]
+        for hint in hints:
+            ttk.Label(self.gesture_frame, text=hint, font=('TkDefaultFont', 11)).pack(anchor='w', pady=1)
+
         # ── Execute button ────────────────────────────
         self.execute_btn = ttk.Button(
             root, text='Make Beverage', command=self._on_execute,
@@ -100,14 +118,21 @@ class BeverageGUI:
     # UI helpers
     # ──────────────────────────────────────────────
     def _on_mode_change(self):
-        if self.mode.get() == 'buttons':
-            self.text_frame.pack_forget()
+        mode = self.mode.get()
+        # Hide all panels first
+        self.buttons_frame.pack_forget()
+        self.text_frame.pack_forget()
+        self.gesture_frame.pack_forget()
+
+        if mode == 'buttons':
             self.buttons_frame.pack(fill='x', padx=10, pady=5,
                                     before=self.execute_btn)
-        else:
-            self.buttons_frame.pack_forget()
+        elif mode == 'text':
             self.text_frame.pack(fill='x', padx=10, pady=5,
                                  before=self.execute_btn)
+        else:  # gesture
+            self.gesture_frame.pack(fill='x', padx=10, pady=5,
+                                    before=self.execute_btn)
 
     def _log(self, message):
         # Thread-safe append to the status area.
@@ -146,6 +171,18 @@ class BeverageGUI:
     # Execution
     # ──────────────────────────────────────────────
     def _on_execute(self):
+        # ── Gesture mode ──
+        if self.mode.get() == 'gesture':
+            self._clear_log()
+            self._log('Starting gesture ordering — show your hand to the camera.')
+            self._log('1 finger=Coffee  Peace=OJ  3 fingers=No milk')
+            self._log('OK=Confirm  Fist=Cancel')
+            self.execute_btn.configure(state='disabled')
+            thread = threading.Thread(target=self._run_gesture_task, daemon=True)
+            thread.start()
+            return
+
+        # ── Buttons / text modes ──
         if self.mode.get() == 'buttons':
             requirement, err = self._build_requirement_from_buttons()
         else:
@@ -160,7 +197,6 @@ class BeverageGUI:
         self._log(f'Request: {requirement}')
         self.execute_btn.configure(state='disabled')
 
-        # Run the robot pipeline on a worker thread so the GUI stays responsive.
         thread = threading.Thread(
             target=self._run_task, args=(requirement,), daemon=True,
         )
@@ -170,7 +206,7 @@ class BeverageGUI:
         try:
             result = run_beverage_task(
                 user_requirement=requirement,
-                confirm=True,  # still uses the OpenCV window to confirm
+                confirm=True,
                 log=self._log,
             )
             self._log('')
@@ -178,6 +214,37 @@ class BeverageGUI:
         except Exception as e:
             self._log(f'[EXCEPTION] {type(e).__name__}: {e}')
         finally:
+            self.root.after(0, lambda: self.execute_btn.configure(state='normal'))
+
+    def _run_gesture_task(self):
+        from utils.zed_camera import ZedCamera
+        zed = ZedCamera()
+        try:
+            beverage, conditions = get_order_from_gesture(
+                zed, timeout=90.0, log=self._log,
+            )
+            if beverage is None:
+                self._log('[INFO] No order placed via gesture.')
+                return
+
+            # Build requirement string exactly as FP1 expects
+            req = f'I want {beverage}.'
+            if conditions:
+                req += f' Dietary conditions: {", ".join(conditions)}.'
+            self._log(f'Requirement: {req}')
+
+            result = run_beverage_task(
+                user_requirement=req,
+                confirm=False,   # gesture already confirmed — skip OpenCV window
+                log=self._log,
+            )
+            self._log('')
+            self._log(f'=== {result["status"].upper()}: {result["message"]} ===')
+
+        except Exception as e:
+            self._log(f'[EXCEPTION] {type(e).__name__}: {e}')
+        finally:
+            zed.close()
             self.root.after(0, lambda: self.execute_btn.configure(state='normal'))
 
 
