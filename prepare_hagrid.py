@@ -26,8 +26,6 @@ def download_hagrid(save_path: Path, subset: bool):
         print(f'Downloading SUBSET (100 imgs/class) for: {TARGET_GESTURES}')
     else:
         print(f'Downloading FULL dataset for: {TARGET_GESTURES}')
-        print('Note: ~38 GB per class — make sure you have ~230 GB free.')
-
     run(
         f'python download.py '
         f'--save_path {save_path} '
@@ -96,7 +94,7 @@ def main():
     yaml_path = write_dataset_yaml(output_path)
 
     print(f'\nDone! Next step — train:')
-    print(f'    python train_gesture_yolo.py --data {yaml_path}')
+    print(f'python train_gesture_yolo.py --data {yaml_path}')
 
 
 if __name__ == '__main__':

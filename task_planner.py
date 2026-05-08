@@ -1,17 +1,10 @@
-"""
-OpenAI Vision-based task planner for the beverage-making robot.
 
-Sends a camera image plus a user requirement string to GPT-4o, which reads
-the container labels and returns a structured task plan (or an error if
-the ingredients needed aren't visible).
-"""
 
-import cv2, json, base64
+import cv2, json, base64, os
 from openai import OpenAI
 
 from config import INGREDIENT_TAG_MAP, BEVERAGE_RECIPES, DIETARY_CONDITIONS
 
-# Build lists for the prompt dynamically from config
 _VALID_INGREDIENTS = ', '.join(f'"{name}"' for name in INGREDIENT_TAG_MAP)
 _RECIPES_TEXT = '\n'.join(
     f'  - {bev}: required={r["required"]}, optional={r["optional"]}'
@@ -24,10 +17,6 @@ _CONDITIONS_TEXT = '\n'.join(
 
 BASE_PROMPT = f"""You are a robotic task planner for a beverage-making robot.
 
-You will be shown an image of a tabletop with several containers. Each container has a
-white label indicating its contents (e.g., "coffee", "sugar", "milk", "orange",
-"chocolate"). There is also a stirring stick and a main cup containing water.
-
 Valid ingredient names: {_VALID_INGREDIENTS}
 
 Beverage recipes:
@@ -37,12 +26,12 @@ Dietary conditions and their effect:
 {_CONDITIONS_TEXT}
 
 Your job:
-1. Identify which ingredient containers are visible on the table from their labels.
-2. Read the user's request (provided below) and figure out which beverage they want,
+1. Identify which ingredient containers are available.
+2. Read the user's request and figure out which beverage they want,
    along with any dietary conditions.
-3. Check whether all REQUIRED ingredients for the chosen beverage are visible on the
-   table. If any required ingredient is missing, return an error.
-4. Otherwise, build a task plan using the OPTIONAL ingredients that are visible,
+3. Check whether all REQUIRED ingredients for the chosen beverage are available.
+   If any required ingredient is missing, return an error.
+4. Build a task plan using the OPTIONAL ingredients that are available,
    SKIPPING any ingredient the user's dietary conditions forbid.
 5. Always add the primary ingredient (the required one) first.
 6. Always STIR as the final step after all ingredients have been added.
@@ -60,87 +49,85 @@ Success case:
   ]
 }}
 
-Error case (required ingredient missing, or user wants something we can't make):
+Error case:
 {{
   "status": "error",
   "message": "Sorry we don't have the ingredients for that"
 }}
 
-Available actions inside the plan:
-- {{"action": "ADD_INGREDIENT", "ingredient": "<name>"}} — pick up, pour, return
-- {{"action": "STIR"}} — pick stirrer, stir, return stirrer
+Available actions:
+- {{"action": "ADD_INGREDIENT", "ingredient": "<name>"}}
+- {{"action": "STIR"}}
 
 Output ONLY the JSON object, nothing else."""
 
 
-def build_prompt(user_requirement):
-    """
-    Append the user's request to the base prompt.
+def _get_client():
+    return OpenAI(api_key=' ')
 
-    Parameters
-    ----------
-    user_requirement : str
-        Free-form text describing what the user wants (e.g.,
-        "I want coffee. I am lactose intolerant.")
-    """
-    req = (user_requirement or '').strip()
-    if not req:
-        req = 'Make coffee with whatever ingredients are available.'
-    return f"{BASE_PROMPT}\n\nUser request: {req}"
+
+def _parse_response(raw):
+    raw = raw.strip()
+    if raw.startswith('```'):
+        raw = raw.split('\n', 1)[1]
+        raw = raw.rsplit('```', 1)[0]
+    return json.loads(raw)
+
+
+def get_task_plan_from_detected(detected_ingredients, user_requirement=''):
+
+    client = _get_client()
+
+    ingredients_str = ', '.join(detected_ingredients) if detected_ingredients else 'none'
+    req = (user_requirement or '').strip() or 'Make a beverage with whatever is available.'
+
+    prompt = (
+        f"{BASE_PROMPT}\n\n"
+        f"Detected ingredients on table: {ingredients_str}\n\n"
+        f"User request: {req}"
+    )
+
+    response = client.chat.completions.create(
+        model='gpt-4o',
+        messages=[{'role': 'user', 'content': prompt}],
+        max_tokens=600,
+    )
+    return _parse_response(response.choices[0].message.content)
 
 
 def get_task_plan(image, user_requirement=''):
-    """
-    Send the camera image plus the user's request to the OpenAI Vision API.
 
-    Parameters
-    ----------
-    image : numpy.ndarray
-        BGR/BGRA image from the camera.
-    user_requirement : str
-        Free-form text describing what the user wants.
-
-    Returns
-    -------
-    dict
-        Parsed response. Either
-            {"status": "ok", "beverage": str, "plan": [...]}
-        or
-            {"status": "error", "message": str}
-    """
-    # Encode image to base64 JPEG
     if len(image.shape) > 2 and image.shape[2] == 4:
         image = cv2.cvtColor(image, cv2.COLOR_BGRA2BGR)
     _, buffer = cv2.imencode('.jpg', image)
     b64_image = base64.b64encode(buffer).decode('utf-8')
 
-    client = OpenAI(api_key='')  # replace with the key, remove after
+    client = _get_client()
 
-    prompt = build_prompt(user_requirement)
+    vision_prompt = (
+        f"{BASE_PROMPT}\n\n"
+        "You will be shown an image of a tabletop with several containers. "
+        "Each container has a white label indicating its contents. "
+        "Identify which ingredients are visible from their labels.\n\n"
+        f"User request: {(user_requirement or '').strip() or 'Make coffee with whatever is available.'}"
+    )
 
     response = client.chat.completions.create(
         model='gpt-4o',
-        messages=[
-            {
-                'role': 'user',
-                'content': [
-                    {'type': 'text', 'text': prompt},
-                    {
-                        'type': 'image_url',
-                        'image_url': {
-                            'url': f'data:image/jpeg;base64,{b64_image}',
-                        },
-                    },
-                ],
-            }
-        ],
+        messages=[{
+            'role': 'user',
+            'content': [
+                {'type': 'text', 'text': vision_prompt},
+                {'type': 'image_url', 'image_url': {'url': f'data:image/jpeg;base64,{b64_image}'}},
+            ],
+        }],
         max_tokens=600,
     )
+    return _parse_response(response.choices[0].message.content)
 
-    raw = response.choices[0].message.content.strip()
-    # Strip markdown code fences if present
-    if raw.startswith('```'):
-        raw = raw.split('\n', 1)[1]
-        raw = raw.rsplit('```', 1)[0]
 
-    return json.loads(raw)
+def build_prompt(user_requirement):
+    req = (user_requirement or '').strip()
+    if not req:
+        req = 'Make coffee with whatever ingredients are available.'
+    return f"{BASE_PROMPT}\n\nUser request: {req}"

@@ -1,15 +1,3 @@
-"""
-Tkinter GUI for the beverage-making robot.
-
-The user picks one of three input modes:
-  - Buttons: choose a beverage and optional dietary conditions via checkboxes.
-  - Text prompt: type a free-form request.
-  - Gesture: use hand gestures via the ZED camera.
-
-Either way, a user-requirement string is built and sent through the full
-capture -> plan -> execute pipeline in FP1.run_beverage_task.
-"""
-
 import threading
 import tkinter as tk
 from tkinter import ttk, scrolledtext
@@ -17,17 +5,18 @@ from tkinter import ttk, scrolledtext
 import cv2
 from PIL import Image, ImageTk
 
+import whisper
+import subprocess
+import sounddevice as sd
+from scipy.io.wavfile import write
+import tempfile 
+
 from config import BEVERAGE_RECIPES, DIETARY_CONDITIONS
 from FP1 import run_beverage_task
 from gesture_input import WebcamSource, get_order_from_gesture
 
-# Max width (px) of the embedded webcam preview in the gesture panel.
 GESTURE_PREVIEW_WIDTH = 480
 
-
-# Which conditions apply to which beverages. A condition is only offered for
-# a beverage if at least one of the ingredients it restricts appears in that
-# beverage's recipe (required + optional).
 def _relevant_conditions(beverage):
     recipe = BEVERAGE_RECIPES[beverage]
     recipe_ingredients = set(recipe['required']) | set(recipe['optional'])
@@ -43,7 +32,6 @@ class BeverageGUI:
         root.title('Beverage Robot')
         root.geometry('640x900')
 
-        # ── Mode selector ─────────────────────────────
         mode_frame = ttk.LabelFrame(root, text='Input mode', padding=10)
         mode_frame.pack(fill='x', padx=10, pady=(10, 5))
 
@@ -60,13 +48,14 @@ class BeverageGUI:
             mode_frame, text='Gesture', value='gesture',
             variable=self.mode, command=self._on_mode_change,
         ).pack(side='left', padx=10)
-
-        # ── Buttons panel ─────────────────────────────
+        ttk.Radiobutton(
+            mode_frame, text='Voice', value='voice',
+            variable=self.mode, command=self._on_mode_change,
+        ).pack(side='left', padx=10)
         self.buttons_frame = ttk.LabelFrame(root, text='Choose a beverage', padding=10)
         self.buttons_frame.pack(fill='x', padx=10, pady=5)
 
         self.selected_beverage = tk.StringVar(value='')
-        # Condition checkboxes: keyed by (beverage, condition) -> BooleanVar
         self.condition_vars = {}
 
         for beverage in BEVERAGE_RECIPES:
@@ -85,7 +74,6 @@ class BeverageGUI:
                 self.condition_vars[(beverage, cond)] = var
                 ttk.Checkbutton(conds_frame, text=cond, variable=var).pack(side='left', padx=5)
 
-        # ── Text prompt panel ─────────────────────────
         self.text_frame = ttk.LabelFrame(root, text='Text prompt', padding=10)
         self.text_entry = tk.Text(self.text_frame, height=4, wrap='word')
         self.text_entry.pack(fill='both', expand=True)
@@ -94,14 +82,13 @@ class BeverageGUI:
             'e.g. I want coffee, but I am lactose intolerant.',
         )
 
-        # ── Gesture hint panel ────────────────────────
         self.gesture_frame = ttk.LabelFrame(root, text='Gesture guide', padding=10)
         hints = [
             ('1 finger',           'Order coffee'),
             ('2 fingers (peace)',  'Order orange juice'),
             ('3 fingers',          'Order chocolate'),
             ('4 fingers',          'Toggle lactose-free (skip milk)'),
-            ('5 fingers (open palm)', 'Toggle diabetic (skip sugar)'),
+            ('Open palm', 'Toggle diabetic (skip sugar)'),
             ('OK sign',            'Confirm the current order'),
             ('Fist',               'Cancel / clear selection'),
         ]
@@ -119,22 +106,25 @@ class BeverageGUI:
             font=('TkDefaultFont', 9, 'italic'),
             foreground='#555555',
         ).pack(anchor='w', pady=(6, 4))
+        self.voice_frame = ttk.LabelFrame(root, text='Voice input', padding=10)
+        self.whisper_model = whisper.load_model("base", device="cpu")
+        ttk.Label(
+            self.voice_frame,
+            text='Press "Make Beverage" and speak your request (8 seconds).',
+        ).pack(anchor='w')
 
-        # Embedded webcam preview (populated during gesture ordering).
         self.camera_label = ttk.Label(self.gesture_frame, anchor='center',
                                       text='(Camera preview appears here when you press "Make Beverage")',
                                       background='#000000', foreground='#bbbbbb')
         self.camera_label.pack(pady=(4, 0))
-        self._camera_photo = None  # keep a reference so Tk does not GC the image
+        self._camera_photo = None  
         self._gesture_stop_event = None
 
-        # ── Execute button ────────────────────────────
         self.execute_btn = ttk.Button(
             root, text='Make Beverage', command=self._on_execute,
         )
         self.execute_btn.pack(fill='x', padx=10, pady=10)
 
-        # ── Output / status ───────────────────────────
         out_frame = ttk.LabelFrame(root, text='Status', padding=10)
         out_frame.pack(fill='both', expand=True, padx=10, pady=(5, 10))
         self.output = scrolledtext.ScrolledText(out_frame, wrap='word', state='disabled')
@@ -142,12 +132,9 @@ class BeverageGUI:
 
         self._on_mode_change()
 
-    # ──────────────────────────────────────────────
-    # UI helpers
-    # ──────────────────────────────────────────────
     def _on_mode_change(self):
         mode = self.mode.get()
-        # Hide all panels first
+
         self.buttons_frame.pack_forget()
         self.text_frame.pack_forget()
         self.gesture_frame.pack_forget()
@@ -158,12 +145,14 @@ class BeverageGUI:
         elif mode == 'text':
             self.text_frame.pack(fill='x', padx=10, pady=5,
                                  before=self.execute_btn)
-        else:  # gesture
+        elif mode == 'voice':
+            self.voice_frame.pack(fill='x', padx=10, pady=5,
+                                 before=self.execute_btn)                        
+        else:  
             self.gesture_frame.pack(fill='x', padx=10, pady=5,
                                     before=self.execute_btn)
 
     def _log(self, message):
-        # Thread-safe append to the status area.
         def append():
             self.output.configure(state='normal')
             self.output.insert('end', f'{message}\n')
@@ -195,11 +184,7 @@ class BeverageGUI:
             return None, 'Please type a request.'
         return text, None
 
-    # ──────────────────────────────────────────────
-    # Execution
-    # ──────────────────────────────────────────────
     def _on_execute(self):
-        # ── Gesture mode ──
         if self.mode.get() == 'gesture':
             self._clear_log()
             self._log('Starting gesture ordering — show your hand to the laptop webcam.')
@@ -210,8 +195,35 @@ class BeverageGUI:
             thread = threading.Thread(target=self._run_gesture_task, daemon=True)
             thread.start()
             return
+        if self.mode.get() == 'voice':
+            self._clear_log()
+            self.execute_btn.configure(state='disabled')
 
-        # ── Buttons / text modes ──
+            requirement, err = self._build_requirement_from_voice()
+
+            if err:
+                self._log(f'[ERROR] {err}')
+                self.execute_btn.configure(state='normal')
+                return
+
+            self._log(f'Request: {requirement}')
+
+            try:
+                result = run_beverage_task(
+                    user_requirement=requirement,
+                    confirm=True,
+                    log=self._log,
+                )
+                self._log('')
+                self._log(f'=== {result["status"].upper()}: {result["message"]} ===')
+
+            except Exception as e:
+                self._log(f'[EXCEPTION] {type(e).__name__}: {e}')
+
+            finally:
+                self.execute_btn.configure(state='normal')
+
+            return
         if self.mode.get() == 'buttons':
             requirement, err = self._build_requirement_from_buttons()
         else:
@@ -246,9 +258,7 @@ class BeverageGUI:
             self.root.after(0, lambda: self.execute_btn.configure(state='normal'))
 
     def _update_preview(self, bgr_frame):
-        """Render an annotated BGR frame into the embedded gesture preview.
-        Called from the gesture thread; schedules the actual Tk update on the
-        main thread."""
+
         rgb = cv2.cvtColor(bgr_frame, cv2.COLOR_BGR2RGB)
         h, w = rgb.shape[:2]
         if w > GESTURE_PREVIEW_WIDTH:
@@ -260,9 +270,35 @@ class BeverageGUI:
 
         def apply():
             photo = ImageTk.PhotoImage(image=pil_img)
-            self._camera_photo = photo  # retain reference
+            self._camera_photo = photo  
             self.camera_label.configure(image=photo, text='')
         self.root.after(0, apply)
+    def _build_requirement_from_voice(self):
+        try:
+            self._log('Recording...')
+            fs = 16000
+            duration = 8
+
+            recording = sd.rec(int(duration * fs), samplerate=fs, channels=1)
+            sd.wait()
+
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+                write(f.name, fs, recording)
+
+                self._log('Transcribing...')
+                model = self.whisper_model
+                result = model.transcribe(f.name)
+
+            text = result["text"].strip()
+
+            if not text:
+                return None, 'Could not understand audio.'
+
+            self._log(f'You said: {text}')
+            return text, None
+
+        except Exception as e:
+            return None, f'Voice error: {e}'
 
     def _clear_preview(self):
         def apply():
@@ -276,7 +312,7 @@ class BeverageGUI:
     def _run_gesture_task(self):
         cam = None
         try:
-            cam = WebcamSource()
+            cam = WebcamSource(cam_id=2)
         except Exception as e:
             self._log(f'[ERROR] Could not open laptop webcam: {e}')
             self.root.after(0, lambda: self.execute_btn.configure(state='normal'))
@@ -294,8 +330,7 @@ class BeverageGUI:
                 self._log('[INFO] No order placed via gesture.')
                 return
 
-            # Build the same requirement string that button/text modes produce
-            # so the downstream prompt in FP1 is consistent across input modes.
+
             req = f'I want {beverage}.'
             if conditions:
                 req += f' Dietary conditions: {", ".join(conditions)}.'
@@ -303,7 +338,7 @@ class BeverageGUI:
 
             result = run_beverage_task(
                 user_requirement=req,
-                confirm=False,   # gesture already confirmed — skip OpenCV window
+                confirm=False,   
                 log=self._log,
             )
             self._log('')

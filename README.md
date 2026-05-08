@@ -1,8 +1,9 @@
 # cv5551-s26-team-dcml
-This is for the Real Robot Challenge and Final Project for CSCI 5551 (Spring 2026).
+This is for the Final Project of CSCI 5551 (Spring 2026) at the University of Minnesota.
 
-Project Title: Making Beverages with VLM-based Task Planning
+Project Title: Beverage-Making Robot: VLM-Based Task Planning & Grasp Pose Estimation
 
+Group 6.
 
 Team Members:
 

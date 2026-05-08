@@ -1,11 +1,3 @@
-"""
-FP1 – Beverage-Making Robot
-
-Main orchestrator. Exposes `run_beverage_task(user_requirement)` so the GUI
-(or any other caller) can trigger the full capture -> plan -> execute flow.
-Running this file directly prompts for a request on the command line.
-"""
-
 import cv2, json, time
 from xarm.wrapper import XArmAPI
 
@@ -14,16 +6,13 @@ from utils.vis_utils import draw_pose_axes
 from checkpoint1 import GRIPPER_LENGTH, CUBE_TAG_SIZE
 from config import ROBOT_IP, INGREDIENT_TAG_MAP
 from primitives import ContainerDetector, execute_add_ingredient, execute_stir
-from task_planner import get_task_plan
+from task_planner import get_task_plan_from_detected
 
 
 def execute_plan(arm, plan, poses, log=print):
-    """
-    Execute a task plan (list of action dicts) using the robot.
-    """
     for i, step in enumerate(plan):
         action = step['action']
-        label = f'[Step {i+1}/{len(plan)}] {action}'
+        label  = f'[Step {i+1}/{len(plan)}] {action}'
         if 'ingredient' in step:
             label += f' — {step["ingredient"]}'
         log(label)
@@ -52,28 +41,10 @@ def execute_plan(arm, plan, poses, log=print):
 
 
 def run_beverage_task(user_requirement='', confirm=True, log=print):
-    """
-    End-to-end pipeline: capture scene, plan, optionally confirm, execute.
 
-    Parameters
-    ----------
-    user_requirement : str
-        Free-form text describing the request (e.g. "coffee, lactose intolerant").
-    confirm : bool
-        If True, shows the captured image and waits for a keypress before executing.
-        Set to False for GUI-driven flows that handle confirmation externally.
-    log : callable
-        Function used for progress messages (defaults to print). The GUI passes
-        its own logger to route messages into the status area.
-
-    Returns
-    -------
-    dict
-        {"status": "ok"|"error", "message": str, "response": <raw API response>}
-    """
-    zed = ZedCamera()
+    zed              = ZedCamera()
     camera_intrinsic = zed.camera_intrinsic
-    detector = ContainerDetector(camera_intrinsic)
+    detector         = ContainerDetector(camera_intrinsic)
 
     arm = XArmAPI(ROBOT_IP)
     arm.connect()
@@ -86,21 +57,29 @@ def run_beverage_task(user_requirement='', confirm=True, log=print):
 
     try:
         log('Capturing scene...')
-        cv_image = zed.image
+        cv_image    = zed.image
+        depth_image = zed.depth
+        point_cloud = zed.point_cloud   # HxWx4 XYZW in meters
 
         log('Detecting containers...')
-        poses, poses_cam = detector.detect_all(cv_image)
+        poses, poses_cam = detector.detect_all(cv_image, depth_image, point_cloud)
         if poses is None or len(poses) == 0:
             return {'status': 'error', 'message': 'No containers detected.', 'response': None}
-        log(f'Detected tag IDs: {list(poses.keys())}')
 
-        # Draw pose axes on detected tags (for the confirmation window)
+        log(f'Detected IDs: {list(poses.keys())}')
+
+        detected_ingredients = [
+            name for name, tag_id in INGREDIENT_TAG_MAP.items()
+            if tag_id in poses
+        ]
+        log(f'Detected ingredients: {detected_ingredients}')
+
         for t_cam_obj in poses_cam.values():
             draw_pose_axes(cv_image, camera_intrinsic, t_cam_obj, size=CUBE_TAG_SIZE)
 
         log(f'User request: {user_requirement!r}')
-        log('Sending image to OpenAI for task planning...')
-        response = get_task_plan(cv_image, user_requirement)
+        log('Sending to GPT-4o for task planning...')
+        response = get_task_plan_from_detected(detected_ingredients, user_requirement)
         log('Received response:')
         log(json.dumps(response, indent=2))
 
@@ -108,7 +87,7 @@ def run_beverage_task(user_requirement='', confirm=True, log=print):
             message = response.get('message', 'Unknown planning error.')
             return {'status': 'error', 'message': message, 'response': response}
 
-        plan = response.get('plan', [])
+        plan     = response.get('plan', [])
         beverage = response.get('beverage', '?')
 
         if confirm:

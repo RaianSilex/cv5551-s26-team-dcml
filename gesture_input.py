@@ -1,22 +1,22 @@
 """
-Gesture → Robot Action mapping:
-    one   → Order: Coffee
-    peace → Order: Orange juice
-    three → Order: Chocolate
-    four  → Toggle: lactose-free (skips milk)
-    five  → Toggle: diabetic (skips sugar)
-    ok    → Confirm current selection
-    fist  → Cancel / clear selection
+Gesture : Robot Action mapping:
+    one   : Order: Coffee
+    peace : Order: Orange juice
+    three : Order: Chocolate
+    four  : Toggle: lactose-free (skips milk)
+    palm  : Toggle: diabetic (skips sugar)
+    ok    : Confirm current selection
+    fist  : Cancel / clear selection
 """
 
-import threading
 import cv2, time, torch
 from PIL import Image
 from transformers import AutoImageProcessor, SiglipForImageClassification
 import mediapipe as mp
+from mediapipe.tasks import python as mp_python
+from mediapipe.tasks.python import vision as mp_vision
 
 HF_MODEL = 'prithivMLmods/Hand-Gesture-19'
-
 
 GESTURE_TO_BEVERAGE = {
     'one':   'coffee',
@@ -24,15 +24,16 @@ GESTURE_TO_BEVERAGE = {
     'three': 'chocolate',
 }
 GESTURE_TO_CONDITION = {
-    'four': 'lactose intolerant',   # 4 fingers = skip milk
-    'five': 'diabetic',             # 5 fingers = skip sugar
+    'four': 'lactose intolerant',
+    'palm': 'diabetic',
 }
 CONFIRM_GESTURE = 'ok'
 CANCEL_GESTURE  = 'fist'
 
-CONFIDENCE_THRESHOLD = 0.75  
-DEBOUNCE_FRAMES      = 15    
-                               
+CONFIDENCE_THRESHOLD = 0.75
+DEBOUNCE_FRAMES      = 15
+
+
 class GestureRecognizer:
 
     def __init__(self):
@@ -41,28 +42,30 @@ class GestureRecognizer:
         self.model     = SiglipForImageClassification.from_pretrained(HF_MODEL)
         self.model.eval()
 
-        self.mp_hands = mp.solutions.hands.Hands(
-            static_image_mode=False,
-            max_num_hands=1,
-            min_detection_confidence=0.7,
-            min_tracking_confidence=0.5,
+        base_options = mp_python.BaseOptions(model_asset_path='hand_landmarker.task')
+        options = mp_vision.HandLandmarkerOptions(
+            base_options=base_options,
+            num_hands=1,
+            min_hand_detection_confidence=0.7,
         )
+        self.hand_detector = mp_vision.HandLandmarker.create_from_options(options)
+
         print('GestureRecognizer ready.')
 
     def predict(self, frame):
-
         annotated = frame.copy()
         h, w = frame.shape[:2]
 
-        rgb    = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        result = self.mp_hands.process(rgb)
+        mp_image = mp.Image(image_format=mp.ImageFormat.SRGB,
+                            data=cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+        result = self.hand_detector.detect(mp_image)
 
-        if not result.multi_hand_landmarks:
+        if not result.hand_landmarks:
             cv2.putText(annotated, 'No hand detected', (20, 45),
                         cv2.FONT_HERSHEY_SIMPLEX, 1.0, (100, 100, 100), 2)
             return None, 0.0, annotated
 
-        lm  = result.multi_hand_landmarks[0].landmark
+        lm  = result.hand_landmarks[0]
         xs  = [l.x for l in lm]
         ys  = [l.y for l in lm]
         pad = 0.15
@@ -98,8 +101,6 @@ class GestureRecognizer:
 
 
 class WebcamSource:
-    """Minimal cv2.VideoCapture wrapper that matches the `image`/`close` API
-    used by ZedCamera, so get_order_from_gesture can consume either source."""
     def __init__(self, cam_id=0):
         self.cap = cv2.VideoCapture(cam_id)
         if not self.cap.isOpened():
@@ -118,15 +119,7 @@ class WebcamSource:
 
 def get_order_from_gesture(cam, timeout=60.0, log=print,
                            on_frame=None, stop_event=None):
-    """
-    Parameters
-    ----------
-    cam : object with `.image` returning a BGR numpy frame (ZedCamera or WebcamSource).
-    on_frame : optional callable(annotated_bgr_frame). If provided, the caller
-        is responsible for displaying frames (e.g. an embedded Tk panel) and
-        no OpenCV window is created.
-    stop_event : optional threading.Event that, when set, breaks the loop early.
-    """
+
     recognizer = GestureRecognizer()
 
     selected_beverage = None
@@ -140,7 +133,7 @@ def get_order_from_gesture(cam, timeout=60.0, log=print,
     log('peace (2): Orange Juice')
     log('three fingers: Chocolate')
     log('four fingers: Toggle lactose-free (skip milk)')
-    log('five (open palm): Toggle diabetic (skip sugar)')
+    log('open palm: Toggle diabetic (skip sugar)')
     log('ok: Confirm')
     log('fist: Cancel / restart')
 
@@ -244,14 +237,14 @@ def _draw_hud(frame, beverage, conditions, stable, now, deadline):
 
 if __name__ == '__main__':
     print('Standalone test (webcam). Press Q to quit.\n')
-    cam = WebcamSource()
+    cam = WebcamSource(cam_id=2)
     try:
         beverage, conditions = get_order_from_gesture(cam, timeout=90.0)
         if beverage:
             req = f'I want {beverage}.'
             if conditions:
                 req += f' Dietary conditions: {", ".join(conditions)}.'
-            print(f'\n→ Requirement string for FP1: {req!r}')
+            print(f'\nRequirement string for FP1: {req!r}')
         else:
             print('\nNo order placed.')
     finally:
